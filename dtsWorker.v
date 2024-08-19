@@ -23,6 +23,9 @@
 // synthesis VERILOG_INPUT_VERSION VERILOG_2001
 `default_nettype none
 module dtsWorker(clk, reset, natRuler, done);
+	parameter SEEDCLASS = 123; // choose 1 <= SEEDCLASS <= SEEDCOEFF
+	parameter SEEDCOEFF = 123456;
+
 	parameter n = 3; // num blocks
 	parameter k = 3; // num marks (excluding zero mark)
 	parameter M = 19; // max mark to consider
@@ -30,14 +33,25 @@ module dtsWorker(clk, reset, natRuler, done);
 	parameter k_iWIDTH = 2; // num bits to represent k indices
 	parameter M_WIDTH = 5; // num bits to represent the value M
 
-	parameter BLOCKGEN_THRESH = 100;
-	parameter BLOCKGEN_CTRWIDTH = 7;
-	parameter DTSGEN_THRESH = 100*1000;
-	parameter DTSGEN_CTRWIDTH = 17;
+	/*
+		Note that we need BLOCKGEN_THRESH >= k-1.
+		Note further that it is NOT beneficial to have PARMARKS
+		or PARMARKS*BLOCKGEN_THRESH be too large!
+		It is better to backtrack if marks sampled from the specified
+		distributions don't fit than it is to force any mark to fit.
+		Marks sampled from the specified distributions are more likely
+		to allow eventual completion of the entire DTS.
+	*/
+	parameter BLOCKGEN_THRESH = 5;
+	parameter PARMARKS = 5;
+	parameter BLOCKGEN_CTRWIDTH = 3; // num bits to represent the value BLOCKGEN_THRESH
 
-	input clk;
-	input reset;
-	output done;
+	parameter DTSGEN_THRESH = 10*1000;
+	parameter DTSGEN_CTRWIDTH = 14; // num bits to represent the value DTSGEN_THRESH
+
+	input wire clk;
+	input wire reset;
+	output wire done;
 
 	// registers representing dts state (6)
 	output reg [n*(M+1) - 1 : 0] natRuler;
@@ -84,15 +98,9 @@ module dtsWorker(clk, reset, natRuler, done);
 	// register update and reset
 	parameter [M:0] ZERO = 0;
 	parameter [M:0] ONE = 1;
-//	integer q;
 	always @(posedge clk) begin
 		if (reset) begin
 			// dts state registers
-//			for (q = 0; q <= n-1; q = q + 1) begin
-//				natRuler[M + q*(M+1) -: M+1] <= ONE;
-//				revRuler[M + q*(M+1) -: M+1] <= ONE;
-//				spectrum[M + q*(M+1) -: M+1] <= ZERO;
-//			end
 			natRuler <= {n{ONE}};
 			revRuler <= {n{ONE}};
 			spectrum <= {n{ZERO}};
@@ -124,44 +132,81 @@ module dtsWorker(clk, reset, natRuler, done);
 		end
 	end
 
-	// mark and markIsValid are determined by current state
-	reg [M_WIDTH-1:0] mark;
-	
-	// optional pipelining of markGen output:
-	wire [M_WIDTH-1:0] markRegIn;
+	reg [PARMARKS*M_WIDTH-1:0] mark_options;
+	wire [PARMARKS*M_WIDTH-1:0] mark_optionsIn;
+	integer q;
 	always @(posedge clk) begin
 		if (reset) begin
-			mark <= M;
+			for (q = 0; q < PARMARKS; q = q + 1) begin
+				mark_options[M_WIDTH-1 + q*M_WIDTH -: M_WIDTH] <= 0;
+			end
 		end else begin
-			mark <= markRegIn;
+			mark_options <= mark_optionsIn;
 		end
 	end
 
-	multiDiscNonUnif markGen(clk, reset, j, markRegIn);
-	
-	
-	
-	reg [M:0] leftDistances, rightDistances;
-	wire [M:0] distances, bisection, intersection;
-	assign distances = leftDistances | rightDistances;
-	assign bisection = leftDistances & rightDistances;
-	assign intersection = cumSpectrum & distances;
+	genvar u;
+	generate
+		for (u = 0; u < PARMARKS; u = u + 1) begin:unit
+			multiDiscNonUnif #( .SEED( SEEDCOEFF*u + SEEDCLASS ) ) markGen(clk, reset, j, mark_optionsIn[M_WIDTH-1 + u*M_WIDTH -: M_WIDTH]);
+		end
+	endgenerate
+
+	reg [PARMARKS*(M+1)-1:0] leftDistances_options;
+	reg [PARMARKS*(M+1)-1:0] rightDistances_options;
+	reg [PARMARKS*(M+1)-1:0] distances_options;
+	reg [PARMARKS*(M+1)-1:0] bisection_options;
+	reg [PARMARKS*(M+1)-1:0] intersection_options;
+	reg [PARMARKS-1:0] optionValidity;
+	integer v;
 	always @(*) begin
-		if (mark > largestMark) begin
-			leftDistances = revRuler[M + i*(M+1) -: M+1] << (mark - largestMark);
-			rightDistances = ZERO;
-		end else begin
-			leftDistances = revRuler[M + i*(M+1) -: M+1] >> (largestMark - mark);
-			rightDistances = natRuler[M + i*(M+1) -: M+1] >> mark;
+		for (v = 0; v < PARMARKS; v = v + 1) begin
+			if (mark_options[M_WIDTH-1 + v*M_WIDTH -: M_WIDTH] > largestMark) begin
+				leftDistances_options[M + v*(M+1) -: M+1] = revRuler[M + i*(M+1) -: M+1] << (mark_options[M_WIDTH-1 + v*M_WIDTH -: M_WIDTH] - largestMark);
+				rightDistances_options[M + v*(M+1) -: M+1] = ZERO;
+			end else begin
+				leftDistances_options[M + v*(M+1) -: M+1] = revRuler[M + i*(M+1) -: M+1] >> (largestMark - mark_options[M_WIDTH-1 + v*M_WIDTH -: M_WIDTH]);
+				rightDistances_options[M + v*(M+1) -: M+1] = natRuler[M + i*(M+1) -: M+1] >> mark_options[M_WIDTH-1 + v*M_WIDTH -: M_WIDTH];
+			end
+			distances_options[M + v*(M+1) -: M+1] = leftDistances_options[M + v*(M+1) -: M+1] | rightDistances_options[M + v*(M+1) -: M+1];
+			bisection_options[M + v*(M+1) -: M+1] = leftDistances_options[M + v*(M+1) -: M+1] & rightDistances_options[M + v*(M+1) -: M+1];
+			intersection_options[M + v*(M+1) -: M+1] = cumSpectrum & distances_options[M + v*(M+1) -: M+1];
+			optionValidity[v] = !( bisection_options[M + v*(M+1) -: M+1] || intersection_options[M + v*(M+1) -: M+1] );
 		end
 	end
-	wire markIsValid;
-	assign markIsValid = !(bisection || intersection);
-	
-//	integer qq;
+
+	reg [M:0] leftDistances;
+	reg [M:0] rightDistances;
+	reg [M:0] distances;
+	reg [M:0] bisection;
+	reg [M:0] intersection;
+	reg [M_WIDTH-1:0] mark;
+	reg markIsValid;
+
+	integer w;
+	always @(*) begin
+		leftDistances = leftDistances_options[M + 0*(M+1) -: M+1];
+		rightDistances = rightDistances_options[M + 0*(M+1) -: M+1];
+		distances = distances_options[M + 0*(M+1) -: M+1];
+		bisection = bisection_options[M + 0*(M+1) -: M+1];
+		intersection = intersection_options[M + 0*(M+1) -: M+1];
+		mark = mark_options[M_WIDTH-1 + 0*M_WIDTH -: M_WIDTH];
+		markIsValid = optionValidity[0];
+		for (w = 0; w < PARMARKS; w = w + 1) begin
+			if (optionValidity[w]) begin
+				leftDistances = leftDistances_options[M + w*(M+1) -: M+1];
+				rightDistances = rightDistances_options[M + w*(M+1) -: M+1];
+				distances = distances_options[M + w*(M+1) -: M+1];
+				bisection = bisection_options[M + w*(M+1) -: M+1];
+				intersection = intersection_options[M + w*(M+1) -: M+1];
+				mark = mark_options[M_WIDTH-1 + w*M_WIDTH -: M_WIDTH];
+				markIsValid = optionValidity[w];
+			end
+		end
+	end
+
 	// state transition logic
 	always @(*) begin
-//		qq=0;
 		// defaults:
 		// dts state
 		next_natRuler = natRuler;
@@ -194,11 +239,6 @@ module dtsWorker(clk, reset, natRuler, done);
 							next_ctrlState = ctrlC; // don't care about other updates
 						end else if (dtsGenIters == DTSGEN_THRESH) begin
 							// reset all 11 registers
-//							for (qq = 0; qq <= n-1; qq = qq + 1) begin
-//								next_natRuler[M + qq*(M+1) -: M+1] = ONE;
-//								next_revRuler[M + qq*(M+1) -: M+1] = ONE;
-//								next_spectrum[M + qq*(M+1) -: M+1] = ZERO;
-//							end
 							next_natRuler = {n{ONE}};
 							next_revRuler = {n{ONE}};
 							next_spectrum = {n{ZERO}};
@@ -219,6 +259,20 @@ module dtsWorker(clk, reset, natRuler, done);
 						end
 					end else begin // mark inserted but block not completed
 						if (blockGenIters == BLOCKGEN_THRESH) begin // transition to ctrlB
+							if (i == 0) begin
+								// reset all 11 registers
+								next_natRuler = {n{ONE}};
+								next_revRuler = {n{ONE}};
+								next_spectrum = {n{ZERO}};
+								next_cumSpectrum = ZERO;
+								next_largestMark = 0;
+								next_t = 0;
+								next_dtsGenIters = 0;
+								next_blockGenIters = 0;
+								next_j = 0;
+								next_i = 0;
+								next_ctrlState = ctrlA;
+							end else begin
 							// Entry of ctrlB:
 							// dts state
 							next_natRuler[M + i*(M+1) -: M+1] = ONE;
@@ -232,6 +286,7 @@ module dtsWorker(clk, reset, natRuler, done);
 							next_j = 0;
 							// control state
 							next_ctrlState = ctrlB;
+							end
 						end else begin // mark inserted, block not completed, not out of iters
 							next_blockGenIters = blockGenIters + 1;
 							next_j = j + 1;
@@ -239,6 +294,20 @@ module dtsWorker(clk, reset, natRuler, done);
 					end
 				end else begin // invalid mark
 					if (blockGenIters == BLOCKGEN_THRESH) begin // invalid mark and out of iters
+						if (i == 0) begin
+							// reset all 11 registers
+							next_natRuler = {n{ONE}};
+							next_revRuler = {n{ONE}};
+							next_spectrum = {n{ZERO}};
+							next_cumSpectrum = ZERO;
+							next_largestMark = 0;
+							next_t = 0;
+							next_dtsGenIters = 0;
+							next_blockGenIters = 0;
+							next_j = 0;
+							next_i = 0;
+							next_ctrlState = ctrlA;
+						end else begin
 							// Entry of ctrlB:
 							// dts state
 							next_natRuler[M + i*(M+1) -: M+1] = ONE;
@@ -252,6 +321,7 @@ module dtsWorker(clk, reset, natRuler, done);
 							next_j = 0;
 							// control state
 							next_ctrlState = ctrlB;
+						end
 					end else begin // invalid mark and not out of iters
 						next_blockGenIters = blockGenIters + 1;
 					end
@@ -272,11 +342,6 @@ module dtsWorker(clk, reset, natRuler, done);
 						// go back to ctrlA
 						if (dtsGenIters == DTSGEN_THRESH) begin // out of iters
 							// reset all 11 registers
-//							for (qq = 0; qq <= n-1; qq = qq + 1) begin
-//								next_natRuler[M + qq*(M+1) -: M+1] = ONE;
-//								next_revRuler[M + qq*(M+1) -: M+1] = ONE;
-//								next_spectrum[M + qq*(M+1) -: M+1] = ZERO;
-//							end
 							next_natRuler = {n{ONE}};
 							next_revRuler = {n{ONE}};
 							next_spectrum = {n{ZERO}};
@@ -383,6 +448,7 @@ module dtsWorker(clk, reset, natRuler, done);
 				end
 			end //case ctrl B
 			ctrlC : ;// stay;
+			default : ;
 		endcase
 	end
 endmodule
