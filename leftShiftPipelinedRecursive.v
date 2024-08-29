@@ -21,54 +21,61 @@
 // SOFTWARE.
 
 `default_nettype none
-module leftShiftPipelinedRecursive(clk, reset, out, in, shift);
-
+module leftShiftPipelinedRecursive(clk, reset, in, shift, validIn, out, validOut);
 	parameter WIDTH = 13; // width of input to be shifted
 	parameter STAGES = ($clog2(WIDTH)+1)/2; // stages/latency
 
 	input wire clk;
 	input wire reset;
 
-	output wire [WIDTH-1:0] out;
 	input wire [WIDTH-1:0] in;
 	input wire [$clog2(WIDTH)-1:0] shift;
+	input wire validIn;
 
-
-	wire [(2*STAGES)-1:0] shiftPadded;
-	assign shiftPadded = shift;
+	output wire [WIDTH-1:0] out;
+	output wire validOut;
 
 	reg [STAGES*WIDTH-1:0] stages;
-	reg [STAGES*(2*STAGES)-1:0] shifts;
+	reg [(STAGES-1)*$clog2(WIDTH)-1:0] shifts;
+	reg [STAGES-1:0] valid;
+
+	assign out = stages[WIDTH-1 -: WIDTH];
+	assign validOut = valid[0];
 
 	integer i, j, k, l;
 	always @(posedge clk) begin
 		if (reset) begin
-			stages <= 0;
+			valid <= 0;
 			shifts <= 0;
+			stages <= 0;
 		end else begin
-			shifts[(STAGES-1)*(2*STAGES) + (2*STAGES)-1 -: (2*STAGES)] <= shiftPadded;
-			for (i = STAGES-1; i >= 1; i = i - 1) begin
-				shifts[(i-1)*(2*STAGES) + (2*STAGES)-1 -: (2*STAGES)] <= shifts[i*(2*STAGES) + (2*STAGES)-1 -: (2*STAGES)];
+			valid <= {validIn, valid[STAGES-1:1]};
+			for (i = STAGES-2; i >= 0; i = i - 1) begin
+				if (i == STAGES-2) begin
+					shifts[i*$clog2(WIDTH) + $clog2(WIDTH)-1 -: $clog2(WIDTH)] <= shift;
+				end else begin
+					shifts[i*$clog2(WIDTH) + $clog2(WIDTH)-1 -: $clog2(WIDTH)] <= shifts[(i+1)*$clog2(WIDTH) + $clog2(WIDTH)-1 -: $clog2(WIDTH)];
+				end
 			end
-			for (i = STAGES; i >= 1; i = i - 1) begin // pipeline stage to assign
-				for (j = 1; j <= (1<<(2*(STAGES-(i-1)))); j = j + 1) begin // contiguous segment to be shifted
-					for (k = 0; k < (1<<(2*(i-1))); k = k + 1) begin // bit of contiguous segment to be shifted
-						if (j*(1<<(2*(i-1))) - 1 - k < WIDTH) begin
+			for (i = STAGES-1; i >= 0; i = i - 1) begin // pipeline stage to assign
+				for (j = 1; j <= (1<<(2*(STAGES-i))); j = j + 1) begin // contiguous segment to be shifted
+					for (k = 0; k < (1<<(2*i)); k = k + 1) begin // bit of contiguous segment to be shifted
+						if (j*(1<<(2*i)) - 1 - k < WIDTH) begin
 							for (l = 0; l < 4; l = l + 1) begin // multiplex four choices of shift
-								if (i == STAGES) begin // exception for input stage
-									if (shiftPadded[(2*STAGES)-1 - 2*(STAGES-i) -: 2] == l) begin
+								if (i == STAGES-1) begin // exception for input stage
+									if (((shift>>(2*i))&2'b11) == l) begin
 										if (j > l) begin
-											stages[(i-1)*WIDTH + j*(1<<(2*(i-1))) - 1 - k] <= in[(j-l)*(1<<(2*(i-1))) - 1 - k];
+											stages[i*WIDTH + j*(1<<(2*i)) - 1 - k] <= in[(j-l)*(1<<(2*i)) - 1 - k];
 										end else begin
-											stages[(i-1)*WIDTH + j*(1<<(2*(i-1))) - 1 - k] <= 0;
+											stages[i*WIDTH + j*(1<<(2*i)) - 1 - k] <= 0;
 										end
 									end
 								end else begin
-									if (shifts[i*(2*STAGES) + (2*STAGES)-1 - 2*(STAGES-i) -: 2] == l) begin
+									if (((shifts[i*$clog2(WIDTH) + $clog2(WIDTH)-1 -: $clog2(WIDTH)]>>(2*i))&2'b11) == l) begin
 										if (j > l) begin
-											stages[(i-1)*WIDTH + j*(1<<(2*(i-1))) - 1 - k] <= stages[i*WIDTH + (j-l)*(1<<(2*(i-1))) - 1 - k];
+											stages[i*WIDTH + j*(1<<(2*i)) - 1 - k] <= stages[(i+1)*WIDTH + (j-l)*(1<<(2*i)) - 1 - k];
 										end else begin
-											stages[(i-1)*WIDTH + j*(1<<(2*(i-1))) - 1 - k] <= 0;
+											stages[i*WIDTH + j*(1<<(2*i)) - 1 - k] <= 0;
 										end
 									end
 								end
@@ -79,13 +86,6 @@ module leftShiftPipelinedRecursive(clk, reset, out, in, shift);
 			end
 		end
 	end
-	assign out = stages[WIDTH-1 -: WIDTH];
 endmodule
-
-
-
-
-
-
 
 
