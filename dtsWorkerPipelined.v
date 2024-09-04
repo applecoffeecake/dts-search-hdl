@@ -41,12 +41,7 @@ module dtsWorkerPipelined(clk, reset, natRuler, done);
 	*/
 	// parameter BLOCKGEN_THRESH = 10;
 	parameter BLOCKGEN_THRESH = 100;
-	parameter PARMARKS = 10;
-	parameter STAGES = 5; // need STAGES * 2^STAGE_POW >= M
-	parameter STAGE_POW = 2; // each stage shifts by up to 2^STAGE_POW
-
-	parameter LATENCY = STAGES + 1;
-
+	parameter PARMARKS = 6;
 	parameter DTSGEN_THRESH = 100*1000;
 
 	input wire clk;
@@ -137,122 +132,125 @@ module dtsWorkerPipelined(clk, reset, natRuler, done);
 	integer q;
 	always @(posedge clk) begin
 		if (reset) begin
-			for (q = 0; q < PARMARKS; q = q + 1) begin
-				mark_options[$clog2(M+1)-1 + q*$clog2(M+1) -: $clog2(M+1)] <= 0;
-			end
+			mark_options <= 0;
 		end else begin
 			mark_options <= mark_optionsIn;
 		end
 	end
-
 	genvar u;
 	generate
 		for (u = 0; u < PARMARKS; u = u + 1) begin:unit
-			multiDiscNonUnif #( .SEED( SEEDCOEFF*u + SEEDCLASS ) ) markGen(clk, reset, j, mark_optionsIn[$clog2(M+1)-1 + u*$clog2(M+1) -: $clog2(M+1)]);
+			multiDiscNonUnif #( .SEED( SEEDCOEFF*u + SEEDCLASS ) ) markGen(
+									clk,
+									reset,
+									j,
+									mark_optionsIn[$clog2(M+1)-1 + u*$clog2(M+1) -: $clog2(M+1)]
+									);
 		end
 	endgenerate
 
 
 	reg clearPipeline;
-	reg [$clog2(LATENCY+1)-1:0] latencyCtr;
-	always @(posedge clk) begin
-		if (reset | clearPipeline) begin
-			latencyCtr <= 0;
-		end else if (latencyCtr == LATENCY) begin
-			latencyCtr <= latencyCtr;
-		end else begin
-			latencyCtr <= latencyCtr + 1;
-		end
-	end
 
-
-	reg [PARMARKS*$clog2(M+1)-1:0] mark_minus_largestMark_options;
-	reg [PARMARKS*$clog2(M+1)-1:0] largestMark_minus_mark_options;
 	reg [PARMARKS*$clog2(M+1)-1:0] mark_options_oneDelay;
+	reg [PARMARKS*$clog2(M+1)-1:0] mark_minus_largestMark_options_oneDelay;
+	reg [PARMARKS*$clog2(M+1)-1:0] largestMark_minus_mark_options_oneDelay;
+	reg valid_oneDelay;
 	integer b;
 	always @(posedge clk) begin
-		if (reset | clearPipeline) begin
-			mark_minus_largestMark_options <= 0;
-			largestMark_minus_mark_options <= 0;
+		if (reset|clearPipeline) begin
+			mark_minus_largestMark_options_oneDelay <= 0;
+			largestMark_minus_mark_options_oneDelay <= 0;
 			mark_options_oneDelay <= 0;
+			valid_oneDelay <= 0;
 		end else begin
 			mark_options_oneDelay <= mark_options;
 			for (b = 0; b < PARMARKS; b = b + 1) begin
-				mark_minus_largestMark_options[$clog2(M+1)-1 + b*$clog2(M+1) -: $clog2(M+1)] <=
+				mark_minus_largestMark_options_oneDelay[$clog2(M+1)-1 + b*$clog2(M+1) -: $clog2(M+1)] <=
 					mark_options[$clog2(M+1)-1 + b*$clog2(M+1) -: $clog2(M+1)] - largestMark;
-				largestMark_minus_mark_options[$clog2(M+1)-1 + b*$clog2(M+1) -: $clog2(M+1)] <=
+				largestMark_minus_mark_options_oneDelay[$clog2(M+1)-1 + b*$clog2(M+1) -: $clog2(M+1)] <=
 					largestMark - mark_options[$clog2(M+1)-1 + b*$clog2(M+1) -: $clog2(M+1)];
 			end
+			valid_oneDelay <= 1;
 		end
 	end
 
 	wire [PARMARKS*(M+1)-1:0] leftDistances_branch1_ins;
 	wire [PARMARKS*(M+1)-1:0] leftDistances_branch2_ins;
 	wire [PARMARKS*(M+1)-1:0] rightDistances_branch2_ins;
+	wire [PARMARKS-1:0] shifterValid_options;
+	wire shifterValid;
+	assign shifterValid = shifterValid_options[0]; // all should be equal
 	genvar z;
 	generate
 		for (z = 0; z < PARMARKS; z = z + 1) begin:pipeline
-			leftShiftPipelined #(.WIDTH(M+1), .STAGES(STAGES), .STAGE_POW(STAGE_POW)) leftShifter (
+			leftShiftPipelinedRecursive #(.WIDTH(M+1)) leftShifter (
 									.clk(clk),
 									.reset(reset|clearPipeline),
 									.out(leftDistances_branch1_ins[M + z*(M+1) -: M+1]),
 									.in(revRuler[M + i*(M+1) -: M+1]),
-									.shift(mark_minus_largestMark_options[$clog2(M+1)-1 + z*$clog2(M+1) -: $clog2(M+1)])
+									.shift(mark_minus_largestMark_options_oneDelay[$clog2(M+1)-1 + z*$clog2(M+1) -: $clog2(M+1)]),
+									.validIn(valid_oneDelay),
+									.validOut(shifterValid_options[z])
 									);
-			rightShiftPipelined #(.WIDTH(M+1), .STAGES(STAGES), .STAGE_POW(STAGE_POW)) rightShifter1 (
+			rightShiftPipelinedRecursive #(.WIDTH(M+1)) rightShifter1 (
 									.clk(clk),
 									.reset(reset|clearPipeline),
 									.out(leftDistances_branch2_ins[M + z*(M+1) -: M+1]),
 									.in(revRuler[M + i*(M+1) -: M+1]),
-									.shift(largestMark_minus_mark_options[$clog2(M+1)-1 + z*$clog2(M+1) -: $clog2(M+1)])
+									.shift(largestMark_minus_mark_options_oneDelay[$clog2(M+1)-1 + z*$clog2(M+1) -: $clog2(M+1)]),
+									.validIn(1'b1),
+									.validOut()
 									);
-			rightShiftPipelined #(.WIDTH(M+1), .STAGES(STAGES), .STAGE_POW(STAGE_POW)) rightShifter2 (
+			rightShiftPipelinedRecursive #(.WIDTH(M+1)) rightShifter2 (
 									.clk(clk),
 									.reset(reset|clearPipeline),
 									.out(rightDistances_branch2_ins[M + z*(M+1) -: M+1]),
 									.in(natRuler[M + i*(M+1) -: M+1]),
-									.shift(mark_options_oneDelay[$clog2(M+1)-1 + z*$clog2(M+1) -: $clog2(M+1)])
+									.shift(mark_options_oneDelay[$clog2(M+1)-1 + z*$clog2(M+1) -: $clog2(M+1)]),
+									.validIn(1'b1),
+									.validOut()
 									);
 		end
 	endgenerate
 
-	// add STAGES cycles of latency
+	// add SHIFTER_LATENCY cycles of latency to synchronize with shifter outputs
+	parameter SHIFTER_LATENCY = ($clog2(M+1)+1)/2;
 	wire [PARMARKS*$clog2(M+1)-1:0] mark_options_delayed;
-	reg [STAGES*PARMARKS*$clog2(M+1)-1:0] mark_options_ShiftReg;
-	integer f;
-	always @(posedge clk) begin
-		if (reset | clearPipeline) begin
-			mark_options_ShiftReg <= 0;
-		end else begin
-			mark_options_ShiftReg[(STAGES-1)*PARMARKS*$clog2(M+1) + PARMARKS*$clog2(M+1)-1 -: PARMARKS*$clog2(M+1)] <= mark_options;
-			for (f = STAGES-1; f >= 1; f = f - 1) begin
-				mark_options_ShiftReg[(f-1)*PARMARKS*$clog2(M+1) + PARMARKS*$clog2(M+1)-1 -: PARMARKS*$clog2(M+1)] <= mark_options_ShiftReg[f*PARMARKS*$clog2(M+1) + PARMARKS*$clog2(M+1)-1 -: PARMARKS*$clog2(M+1)];
-			end
-		end
-	end
-	assign mark_options_delayed = mark_options_ShiftReg[0*PARMARKS*$clog2(M+1) + PARMARKS*$clog2(M+1)-1 -: PARMARKS*$clog2(M+1)];
-
-	// add one more cycle of latency to account for delayed subtractions before shifters
-	reg [PARMARKS*$clog2(M+1)-1:0] mark_options_delayed_oneDelay;
-	reg [PARMARKS-1:0] mark_options_delayed_gt_largestMark_oneDelay;
-	reg [PARMARKS*$clog2(M+1)-1:0] largestMark_minus_mark_options_delayed_oneDelay;
+	wire [PARMARKS*$clog2(M+1)-1:0] largestMark_minus_mark_options_delayed;
+	wire [PARMARKS-1:0] mark_options_gt_largestMark_delayed;
+	reg [SHIFTER_LATENCY*PARMARKS*$clog2(M+1)-1:0] mark_options_ShiftReg;
+	reg [SHIFTER_LATENCY*PARMARKS*$clog2(M+1)-1:0] largestMark_minus_mark_options_ShiftReg;
+	reg [SHIFTER_LATENCY*PARMARKS-1:0] mark_options_gt_largestMark_ShiftReg;
+	assign mark_options_delayed = mark_options_ShiftReg[PARMARKS*$clog2(M+1)-1 -: PARMARKS*$clog2(M+1)];
+	assign largestMark_minus_mark_options_delayed = largestMark_minus_mark_options_ShiftReg[PARMARKS*$clog2(M+1)-1 -: PARMARKS*$clog2(M+1)];
+	assign mark_options_gt_largestMark_delayed = mark_options_gt_largestMark_ShiftReg[PARMARKS-1 -: PARMARKS];
 	integer a;
 	always @(posedge clk) begin
-		if (reset | clearPipeline) begin
-			mark_options_delayed_oneDelay <= 0;
-			mark_options_delayed_gt_largestMark_oneDelay <= 0;
-			largestMark_minus_mark_options_delayed_oneDelay <= 0;
+		if (reset|clearPipeline) begin
+			mark_options_ShiftReg <= 0;
+			largestMark_minus_mark_options_ShiftReg <= 0;
+			mark_options_gt_largestMark_ShiftReg <= 0;
 		end else begin
-			mark_options_delayed_oneDelay <= mark_options_delayed;
+			// shift register inputs:
+			mark_options_ShiftReg[(SHIFTER_LATENCY-1)*PARMARKS*$clog2(M+1) + PARMARKS*$clog2(M+1)-1 -: PARMARKS*$clog2(M+1)] <= mark_options_oneDelay;
 			for (a = 0; a < PARMARKS; a = a + 1) begin
-				mark_options_delayed_gt_largestMark_oneDelay[a] <=
-					mark_options_delayed[$clog2(M+1)-1 + a*$clog2(M+1) -: $clog2(M+1)] > largestMark;
-				largestMark_minus_mark_options_delayed_oneDelay[$clog2(M+1)-1 + a*$clog2(M+1) -: $clog2(M+1)] <=
-					largestMark - mark_options_delayed[$clog2(M+1)-1 + a*$clog2(M+1) -: $clog2(M+1)];
+				largestMark_minus_mark_options_ShiftReg[(SHIFTER_LATENCY-1)*PARMARKS*$clog2(M+1) + a*$clog2(M+1) + $clog2(M+1)-1 -: $clog2(M+1)] <=
+																			largestMark - mark_options_oneDelay[$clog2(M+1)-1 + a*$clog2(M+1) -: $clog2(M+1)];
+				mark_options_gt_largestMark_ShiftReg[(SHIFTER_LATENCY-1)*PARMARKS + a] <=
+																			mark_options_oneDelay[$clog2(M+1)-1 + a*$clog2(M+1) -: $clog2(M+1)] > largestMark;
+			end
+			// shift register
+			for (a = SHIFTER_LATENCY-1; a >= 1; a = a - 1) begin
+				mark_options_ShiftReg[(a-1)*PARMARKS*$clog2(M+1) + PARMARKS*$clog2(M+1)-1 -: PARMARKS*$clog2(M+1)] <=
+																mark_options_ShiftReg[a*PARMARKS*$clog2(M+1) + PARMARKS*$clog2(M+1)-1 -: PARMARKS*$clog2(M+1)];
+				largestMark_minus_mark_options_ShiftReg[(a-1)*PARMARKS*$clog2(M+1) + PARMARKS*$clog2(M+1)-1 -: PARMARKS*$clog2(M+1)] <=
+																largestMark_minus_mark_options_ShiftReg[a*PARMARKS*$clog2(M+1) + PARMARKS*$clog2(M+1)-1 -: PARMARKS*$clog2(M+1)];
+				mark_options_gt_largestMark_ShiftReg[(a-1)*PARMARKS + PARMARKS-1 -: PARMARKS] <=
+																mark_options_gt_largestMark_ShiftReg[a*PARMARKS + PARMARKS-1 -: PARMARKS];
 			end
 		end
 	end
-
 
 	// (5)
 	reg [PARMARKS*(M+1)-1:0] distances_options;
@@ -268,22 +266,22 @@ module dtsWorkerPipelined(clk, reset, natRuler, done);
 	reg [(M+1)-1:0] intersection;
 	always @(*) begin
 		for (v = 0; v < PARMARKS; v = v + 1) begin
-			cand_natRuler_options[M + v*(M+1) -: M+1] = natRuler[M + i*(M+1) -: M+1] | (ONE << mark_options_delayed_oneDelay[$clog2(M+1)-1 + v*$clog2(M+1) -: $clog2(M+1)]);
-			if (mark_options_delayed_gt_largestMark_oneDelay[v]) begin
+			cand_natRuler_options[M + v*(M+1) -: M+1] = natRuler[M + i*(M+1) -: M+1] | (ONE << mark_options_delayed[$clog2(M+1)-1 + v*$clog2(M+1) -: $clog2(M+1)]);
+			if (mark_options_gt_largestMark_delayed[v]) begin
 				leftDistances = leftDistances_branch1_ins[M + v*(M+1) -: M+1];
 				rightDistances = ZERO;
 				cand_revRuler_options[M + v*(M+1) -: M+1] = leftDistances | ONE;
-				cand_largestMark_options[$clog2(M+1)-1 + v*$clog2(M+1) -: $clog2(M+1)] = mark_options_delayed_oneDelay[$clog2(M+1)-1 + v*$clog2(M+1) -: $clog2(M+1)];
+				cand_largestMark_options[$clog2(M+1)-1 + v*$clog2(M+1) -: $clog2(M+1)] = mark_options_delayed[$clog2(M+1)-1 + v*$clog2(M+1) -: $clog2(M+1)];
 			end else begin
 				leftDistances = leftDistances_branch2_ins[M + v*(M+1) -: M+1];
 				rightDistances = rightDistances_branch2_ins[M + v*(M+1) -: M+1];
 				cand_largestMark_options[$clog2(M+1)-1 + v*$clog2(M+1) -: $clog2(M+1)] = largestMark;
-				cand_revRuler_options[M + v*(M+1) -: M+1] = revRuler[M + i*(M+1) -: M+1] | (ONE << largestMark_minus_mark_options_delayed_oneDelay[$clog2(M+1)-1 + v*$clog2(M+1) -: $clog2(M+1)]);
+				cand_revRuler_options[M + v*(M+1) -: M+1] = revRuler[M + i*(M+1) -: M+1] | (ONE << largestMark_minus_mark_options_delayed[$clog2(M+1)-1 + v*$clog2(M+1) -: $clog2(M+1)]);
 			end
 			distances_options[M + v*(M+1) -: M+1] = leftDistances | rightDistances;
 			bisection = leftDistances & rightDistances;
 			intersection = cumSpectrum & distances_options[M + v*(M+1) -: M+1];
-			optionValidity[v] = !( bisection || intersection ) && (latencyCtr == LATENCY);
+			optionValidity[v] = !( bisection || intersection ) && shifterValid;
 		end
 	end
 
