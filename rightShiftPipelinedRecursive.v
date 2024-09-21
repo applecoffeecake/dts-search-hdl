@@ -46,37 +46,37 @@ module rightShiftPipelinedRecursive(clk, reset, in, shift, validIn, out, validOu
 	always @(posedge clk) begin
 		if (reset) begin
 			valid <= 0;
-			shifts <= 0;
-			stages <= 0;
 		end else begin
 			valid <= {validIn, valid[STAGES-1:1]};
-			for (i = STAGES-2; i >= 0; i = i - 1) begin
-				if (i == STAGES-2) begin
-					shifts[i*$clog2(WIDTH) + $clog2(WIDTH)-1 -: $clog2(WIDTH)] <= shift;
-				end else begin
-					shifts[i*$clog2(WIDTH) + $clog2(WIDTH)-1 -: $clog2(WIDTH)] <= shifts[(i+1)*$clog2(WIDTH) + $clog2(WIDTH)-1 -: $clog2(WIDTH)];
-				end
+		end
+	end
+	always @(posedge clk) begin
+		for (i = STAGES-2; i >= 0; i = i - 1) begin
+			if (i == STAGES-2) begin
+				shifts[i*$clog2(WIDTH) + $clog2(WIDTH)-1 -: $clog2(WIDTH)] <= shift;
+			end else begin
+				shifts[i*$clog2(WIDTH) + $clog2(WIDTH)-1 -: $clog2(WIDTH)] <= shifts[(i+1)*$clog2(WIDTH) + $clog2(WIDTH)-1 -: $clog2(WIDTH)];
 			end
-			for (i = STAGES-1; i >= 0; i = i - 1) begin // pipeline stage to assign
-				for (j = 1; j <= (1<<(2*(STAGES-i))); j = j + 1) begin // contiguous segment to be shifted
-					for (k = 0; k < (1<<(2*i)); k = k + 1) begin // bit of contiguous segment to be shifted
-						if (j*(1<<(2*i)) - 1 - k < WIDTH) begin
-							for (l = 0; l < 4; l = l + 1) begin // multiplex four choices of shift
-								if (i == STAGES-1) begin // exception for input stage
-									if (((shift>>(2*i))&2'b11) == l) begin
-										if ((j+l)*(1<<(2*i)) - 1 - k < WIDTH) begin
-											stages[i*WIDTH + j*(1<<(2*i)) - 1 - k] <= in[(j+l)*(1<<(2*i)) - 1 - k];
-										end else begin
-											stages[i*WIDTH + j*(1<<(2*i)) - 1 - k] <= 0;
-										end
+		end
+		for (i = STAGES-1; i >= 0; i = i - 1) begin // pipeline stage to assign
+			for (j = 1; j <= (1<<(2*(STAGES-i))); j = j + 1) begin // contiguous segment to be shifted
+				for (k = 0; k < (1<<(2*i)); k = k + 1) begin // bit of contiguous segment to be shifted
+					if (j*(1<<(2*i)) - 1 - k < WIDTH) begin
+						for (l = 0; l < 4; l = l + 1) begin // multiplex four choices of shift
+							if (i == STAGES-1) begin // exception for input stage
+								if (((shift>>(2*i))&2'b11) == l) begin
+									if ((j+l)*(1<<(2*i)) - 1 - k < WIDTH) begin
+										stages[i*WIDTH + j*(1<<(2*i)) - 1 - k] <= in[(j+l)*(1<<(2*i)) - 1 - k];
+									end else begin
+										stages[i*WIDTH + j*(1<<(2*i)) - 1 - k] <= 0;
 									end
-								end else begin
-									if (((shifts[i*$clog2(WIDTH) + $clog2(WIDTH)-1 -: $clog2(WIDTH)]>>(2*i))&2'b11) == l) begin
-										if ((j+l)*(1<<(2*i)) - 1 - k < WIDTH) begin
-											stages[i*WIDTH + j*(1<<(2*i)) - 1 - k] <= stages[(i+1)*WIDTH + (j+l)*(1<<(2*i)) - 1 - k];
-										end else begin
-											stages[i*WIDTH + j*(1<<(2*i)) - 1 - k] <= 0;
-										end
+								end
+							end else begin
+								if (((shifts[i*$clog2(WIDTH) + $clog2(WIDTH)-1 -: $clog2(WIDTH)]>>(2*i))&2'b11) == l) begin
+									if ((j+l)*(1<<(2*i)) - 1 - k < WIDTH) begin
+										stages[i*WIDTH + j*(1<<(2*i)) - 1 - k] <= stages[(i+1)*WIDTH + (j+l)*(1<<(2*i)) - 1 - k];
+									end else begin
+										stages[i*WIDTH + j*(1<<(2*i)) - 1 - k] <= 0;
 									end
 								end
 							end
@@ -87,5 +87,3 @@ module rightShiftPipelinedRecursive(clk, reset, in, shift, validIn, out, validOu
 		end
 	end
 endmodule
-
-
