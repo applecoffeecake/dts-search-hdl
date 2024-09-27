@@ -95,169 +95,159 @@ module top(
 	end
 
 	// clock
-	// parameter UART_BITDUR = 3472; // for 400 MHz
-	// parameter UART_BITDUR = 3038; // for 350 MHz
 	parameter UART_BITDUR = 2604; // for 300 MHz
 	// parameter UART_BITDUR = 2170; // for 250 MHz
 	// parameter UART_BITDUR = 1736; // for 200 MHz
 	// parameter UART_BITDUR = 1302; // for 150 MHz
-	// parameter UART_BITDUR = 1128; // for 130 MHz
 	// parameter UART_BITDUR = 868; // for 100 MHz
-	// parameter UART_BITDUR = 347; // for 40 MHz
 
 
-	parameter HEADER_LEN = 27;
+	parameter HEADER_LEN = 28;
 	reg [0:8*HEADER_LEN-1] header;
 	always @(posedge clk) begin
-		header <= "Mohannad's Kintex 7 |.oo.|\n";
+		header <= "Mohannad's XC7K325T (.oo.):\n";
 	end
+
+
+	/*
+		BLOCKGEN_THRESH and DTSGEN_THRESH have to be carefully tuned
+		to get good results.
+		When DTSGEN_THRESH is too small, it will be detected by seeing
+		that the DTS doesn't populate to near completion before restarting.
+		This can be observed by outputing the i value.
+		When DTSGEN_THRESH is too large, too much time might be wasted in
+		a cyclic pattern of being stuck on the same hopeless partial
+		DTS which the backtracking move is not strong enough to escape.
+		When BLOCKGEN_THRESH is too small, the DTS will simply not
+		populate and can be seen by outputing j. However, it is NOT beneficial
+		to have PARMARKS or PARMARKS*BLOCKGEN_THRESH be too large!
+		It is better to backtrack if marks sampled from the specified
+		distributions don't fit than it is to force any mark to fit.
+		Marks sampled from the specified distributions are more likely
+		to allow eventual completion of the entire DTS.
+	*/
+
 
 	parameter n = 14; // num blocks
 	parameter k = 4; // num marks per block (excluding zero mark
 	parameter M = 140; // max mark to consider
-	parameter NUM_WORKERS = 8;
-	wire [NUM_WORKERS*n*(M+1)-1:0] results;
-	wire [NUM_WORKERS-1:0] doneSigs;
+	parameter NUM_WORKERS = 48;
+
+	parameter MARKGEN_STAGES = 2;
+	parameter BLOCKGEN_THRESH = (9+1)*4 + 100-4;
+	parameter PARMARKS = 1;
+	// parameter BLOCKGEN_THRESH = (9+1)*4 + 16;
+	// parameter PARMARKS = 5;
+	parameter DTSGEN_THRESH = 200*1000;
+
+	wire poll;
+	assign poll = slowEna;
+	wire readyPoll;
+	reg [$clog2(n+1)-1:0] rowAddr;
+	wire [M:0] row;
 	reg anotherOne;
-	genvar u;
-	generate
-		for (u = 0; u < NUM_WORKERS; u = u + 1) begin:unit
-			dtsWorkerPipelined #(
-								.workerIndex(u),
-								.MARKGEN_STAGES(64),
-								.BLOCKGEN_THRESH((9+1)*4 + 25),
-								.PARMARKS(4),
-								.DTSGEN_THRESH(2*100*1000),
-								.n(n),
-								.k(k),
-								.M(M)
-								) worker(
-								.clk(clk),
-								.reset(reset),
-								.natRuler(results[n*(M+1)*u + n*(M+1)-1 -: n*(M+1)]),
-								.done(doneSigs[u]),
-								.anotherOne(anotherOne)
-								);
-		end
-	endgenerate
+	wire doneSig;
+	multiDtsWorker #(
+						.NUM_WORKERS(NUM_WORKERS),
+						.MARKGEN_STAGES(MARKGEN_STAGES),
+						.BLOCKGEN_THRESH(BLOCKGEN_THRESH),
+						.PARMARKS(PARMARKS),
+						.DTSGEN_THRESH(DTSGEN_THRESH),
+						.n(n),
+						.k(k),
+						.M(M)
+					) main (
+						clk,
+						reset,
+						poll,
+						readyPoll,
+						rowAddr,
+						row,
+						anotherOne,
+						doneSig
+					);
 
-	//	The following is low-cost selection technique for the result of any "done" worker.
-	reg [NUM_WORKERS*n*(M+1)-1:0] resultsB;
-	always @(posedge clk) begin
-		resultsB <= results;
-	end
-	reg [NUM_WORKERS-1:0] doneSigsB;
-	always @(posedge clk) begin
-		if (reset) begin
-			doneSigsB <= 0;
-		end else begin
-			doneSigsB <= doneSigs;
-		end
-	end
-	reg [NUM_WORKERS*n*(M+1)-1:0] resultsShiftReg;
-	reg [NUM_WORKERS-1:0] doneSigsShiftReg;
-	integer b;
-	always @(posedge clk) begin
-		for (b = 0; b < NUM_WORKERS; b = b + 1) begin
-			if (b == NUM_WORKERS-1) begin
-				resultsShiftReg[n*(M+1)*b + n*(M+1)-1 -: n*(M+1)] <= resultsB[n*(M+1)*b + n*(M+1)-1 -: n*(M+1)];
-				doneSigsShiftReg[b] <= doneSigsB[b];
-			end else begin
-				if (doneSigsShiftReg[b+1]) begin
-					resultsShiftReg[n*(M+1)*b + n*(M+1)-1 -: n*(M+1)] <= resultsShiftReg[n*(M+1)*(b+1) + n*(M+1)-1 -: n*(M+1)];
-					doneSigsShiftReg[b] <= doneSigsShiftReg[b+1];
-				end else begin
-					resultsShiftReg[n*(M+1)*b + n*(M+1)-1 -: n*(M+1)] <= resultsB[n*(M+1)*b + n*(M+1)-1 -: n*(M+1)];
-					doneSigsShiftReg[b] <= doneSigsB[b];
-				end
-			end
-		end
-	end
-	reg doneSig;
-	reg [n*(M+1) - 1 : 0] result;
-	always @(posedge clk) begin
-		if (reset) begin
-			doneSig <= 0;
-			result <= 0;
-		end else begin
-			doneSig <= doneSigsShiftReg[0];
-			result <= resultsShiftReg[n*(M+1)*0 + n*(M+1)-1 -: n*(M+1)];
-		end
-	end
-
-	/*
-		Assemble an ascii signal of total width 8*MESS_LEN.
-		First part converts a numerical value of width
-		NUMER_MESS_LEN into ascii of width 8*NUMER_MESS_LEN.
-		Second part adds a header and newline characters.
-	*/
-	parameter NUMER_MESS_LEN = n*(M+1)+1;
-	wire [NUMER_MESS_LEN-1:0] numerMess;
-	assign numerMess = {result, doneSig};
-
-
-	/*
-		Transmit message vector containing MESS_LEN bytes
-		one byte at a time with the uart.
-		Transmission is triggered by asserting startMessage which
-		is currently driven by slowEna.
-
-	*/
-	reg startByteTx;
 	wire readyTx;
-	wire startMessage;
-	assign startMessage = slowEna;
-
-	reg [NUMER_MESS_LEN-1:0] numerMessB;
+	reg sendByte;
+	reg [M:0] rowB;
 	reg [0:7] txByte;
+	reg [2:0] state;
 
-	reg [1:0] state;
-	reg [$clog2(NUMER_MESS_LEN+HEADER_LEN)-1:0] i; // char index
-	parameter A = 0, B = 1, C = 2, D = 3;
-	/*
-		A : idle
-		B : sending header bytes on readyTx,
-			incrementing i
-		C : sending numerical message bytes on
-			readyTx, incrementing i
-	*/
+	parameter IDLE = 0;
+	parameter SENDING_HEADER = 1;
+	parameter WAITING_ON_POLL = 2;
+	parameter SENDING_ROW = 3;
+	parameter READING_ROW = 4;
+	parameter SENDING_DONE_STATUS = 5;
+	parameter SENDING_NEWLINE = 6;
+	parameter BUFFERING_ROW = 7;
+
+	reg [$clog2(M+1+HEADER_LEN)-1:0] i; // char index
+
 	always @(posedge clk) begin
 		case (state)
-			A : begin
-				numerMessB <= numerMess;
-				if (startMessage) begin
-					state <= B;
+			IDLE : begin
+				if (poll) begin
+					state <= SENDING_HEADER;
+					sendByte <= 1;
 					i <= 0;
-					startByteTx <= 1;
 				end
 			end
-			B : begin
+			SENDING_HEADER : begin
 				if (readyTx) begin
-					if (i == HEADER_LEN-1) begin
-						state <= C;
-						i <= NUMER_MESS_LEN-1;
+					if (i == HEADER_LEN - 1) begin
+						state <= WAITING_ON_POLL;
+						rowAddr <= 0;
 					end else begin
 						i <= i + 1;
 					end
 					txByte <= header[8*i +: 8];
 				end
 			end
-			C : begin
-				if (readyTx) begin
-					if (i == 0) begin
-						state <= D;
-					end else begin
-						i <= i - 1;
-					end
-					numerMessB <= numerMessB << 1;
-					txByte <= numerMessB[NUMER_MESS_LEN-1] ? "1" : "0";
+			WAITING_ON_POLL : begin
+				sendByte <= 0;
+				if (readyPoll) begin
+					state <= READING_ROW;
 				end
 			end
-			D : begin
+			READING_ROW : begin
+				if (rowAddr == n) begin
+					state <= SENDING_DONE_STATUS;
+					sendByte <= 1;
+				end else begin
+					rowAddr <= rowAddr + 1;
+					state <= BUFFERING_ROW;
+					sendByte <= 0;
+				end
+			end
+			BUFFERING_ROW : begin
+				rowB <= row;
+				state <= SENDING_ROW;
+				sendByte <= 1;
+				i <= 0;
+			end
+			SENDING_ROW : begin
 				if (readyTx) begin
-					state <= A;
+					if (i == M) begin
+						state <= READING_ROW;
+					end else begin
+						i <= i + 1;
+					end
+					rowB <= rowB << 1;
+					txByte <= rowB[M] ? "1" : "0";
+				end
+			end
+			SENDING_DONE_STATUS : begin
+				if (readyTx) begin
+					state <= SENDING_NEWLINE;
+					txByte <= doneSig ? "1" : "0";
+				end
+			end
+			SENDING_NEWLINE : begin
+				if (readyTx) begin
+					state <= IDLE;
 					txByte <= "\n";
-					startByteTx <= 0;
+					sendByte <= 0;
 				end
 			end
 		endcase
@@ -265,7 +255,7 @@ module top(
 	uartTx #(.BITDUR(UART_BITDUR)) tx(
 									.clk(clk),
 									.reset(reset),
-									.start(startByteTx),
+									.start(sendByte),
                                     .data(txByte),
 									.ready(readyTx),
 									.out(uart_rx_out)
@@ -310,3 +300,4 @@ module top(
 									);
 
 endmodule
+
