@@ -101,7 +101,7 @@ module multiDtsWorker(clk, reset, poll, ready, rowAddr, row, anotherOneBroadcast
 //			selSig <= selSigIn;
 //		end
 //	end
-    always @(posedge clk) begin
+	always @(posedge clk) begin
 		if (pollB) begin
 			selSig <= doneSigs;
 		end
