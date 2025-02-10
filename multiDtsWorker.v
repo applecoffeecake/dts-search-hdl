@@ -86,21 +86,27 @@ module multiDtsWorker(clk, reset, poll, ready, rowAddr, row, anotherOneBroadcast
 	// assertion of poll triggers selection of worker RAM port
 	// with priority given to a done worker
 	reg [NUM_WORKERS-1:0] selSig;
-	reg [NUM_WORKERS-1:0] selSigIn;
+//	reg [NUM_WORKERS-1:0] selSigIn;
 	integer a;
-	always @(*) begin
-		selSigIn = 1'b1;
-		for (a = 0; a < NUM_WORKERS; a = a + 1) begin
-			if (doneSigs[a]) begin
-				selSigIn = 1'b1 << a;
-			end
-		end
-	end
-	always @(posedge clk) begin
+//	always @(*) begin
+//		selSigIn = 1'b1;
+//		for (a = 0; a < NUM_WORKERS; a = a + 1) begin
+//			if (doneSigs[a]) begin
+//				selSigIn = 1'b1 << a;
+//			end
+//		end
+//	end
+//	always @(posedge clk) begin
+//		if (pollB) begin
+//			selSig <= selSigIn;
+//		end
+//	end
+    always @(posedge clk) begin
 		if (pollB) begin
-			selSig <= selSigIn;
+			selSig <= doneSigs;
 		end
 	end
+
 	reg [NUM_WORKERS-1:0] validHose;
 	always @(posedge clk) begin
 		if (pollB) begin
